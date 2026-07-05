@@ -1,6 +1,6 @@
-# Common ignores
-.DS_Store
+*.xlsx
+*.csv
+*.xls
 __pycache__/
 *.pyc
-.venv/
-venv/
+.DS_Store
