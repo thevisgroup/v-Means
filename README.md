@@ -12,6 +12,16 @@ python3 app.py
 
 `app.py` starts the Qt desktop application from `vmeans.gui.main_window`.
 
+## Overview Figure
+
+The overview diagram used in the paper is included here:
+[`figures/overview.pdf`](figures/overview.pdf).
+
+It summarizes the v-Means workflow: load or generate a 2D dataset, construct
+the visible silhouette, detect gradient boundaries, compute cluster centers,
+optionally recurse into child regions, and inspect the final result through
+the details/AI feedback view.
+
 ## Requirements
 
 Tested on macOS with Python 3.12.9. The Python dependencies are listed in
