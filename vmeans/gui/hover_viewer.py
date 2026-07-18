@@ -22,6 +22,22 @@ from .hover_data import RECURSIVE_HOVER_FRAMES, _extract_region_data
 from .hover_ai import HoverAIMixin, AIChatWorker
 from .hover_plot import HoverPlotSelectionMixin
 
+
+class OriginalValueAxis(pg.AxisItem):
+    """Render analysis-space positions as values in the original data units."""
+
+    def __init__(self, orientation: str, scale: float = 1.0, offset: float = 0.0):
+        super().__init__(orientation=orientation)
+        self.value_scale = float(scale)
+        self.value_offset = float(offset)
+
+    def tickStrings(self, values, scale, spacing):
+        original_values = [value * self.value_scale + self.value_offset for value in values]
+        magnitude = max((abs(value) for value in original_values), default=0.0)
+        decimals = 0 if magnitude >= 20 else 1
+        return [f"{value:.{decimals}f}" for value in original_values]
+
+
 class HoverScatterDialog(HoverAIMixin, HoverPlotSelectionMixin, QDialog):
     """Non-modal dialog with hover, point selection, and AI feedback."""
 
@@ -50,6 +66,7 @@ class HoverScatterDialog(HoverAIMixin, HoverPlotSelectionMixin, QDialog):
         self.ai_worker = None
         self.chat_turns: List[tuple[str, str]] = []
         self.selected_indices = set()
+        self.focused_region_id = None
         self._mouse_press = None
         self._last_hover_idx = None
         self._last_hover_time = 0.0
@@ -82,15 +99,34 @@ class HoverScatterDialog(HoverAIMixin, HoverPlotSelectionMixin, QDialog):
             and len(self.original_df) == len(self.points)
         )
 
-        if self.has_original_coords:
+        # Match the animation's geometry: it displays the analysed coordinates
+        # relative to the parent centroid, represented there as theta/r.  Raw
+        # Excel values remain available through original_df for hover details
+        # and AI context, but no longer replace the analysed plotting space.
+        centroid = self.data.get('centroid')
+        if centroid is None:
+            centroid = np.mean(self.points[:, :2], axis=0)
+        centroid = np.asarray(centroid, dtype=float).reshape(-1)
+        if centroid.size < 2 or not np.all(np.isfinite(centroid[:2])):
+            centroid = np.mean(self.points[:, :2], axis=0)
+
+        centred_points = self.points[:, :2] - centroid[:2]
+        self.plot_x = centred_points[:, 0]
+        self.plot_y = centred_points[:, 1]
+        self.axis_scales = np.ones(2, dtype=float)
+        self.axis_offsets = centroid[:2].astype(float)
+        if self.original_xy_cols is not None:
             x_col, y_col = self.original_xy_cols
-            self.plot_x = self.original_df[x_col].values.astype(float)
-            self.plot_y = self.original_df[y_col].values.astype(float)
             self.x_label = str(x_col)
             self.y_label = str(y_col)
+            if self.has_original_coords and self.analysis_settings.get('standardized'):
+                raw_xy = self.original_df.loc[:, [x_col, y_col]].to_numpy(dtype=float)
+                raw_means = np.mean(raw_xy, axis=0)
+                raw_scales = np.std(raw_xy, axis=0, ddof=0)
+                raw_scales = np.where(raw_scales > 0, raw_scales, 1.0)
+                self.axis_scales = raw_scales
+                self.axis_offsets = raw_means + centroid[:2] * raw_scales
         else:
-            self.plot_x = self.points[:, 0]
-            self.plot_y = self.points[:, 1]
             self.x_label = "X"
             self.y_label = "Y"
 
@@ -120,8 +156,40 @@ class HoverScatterDialog(HoverAIMixin, HoverPlotSelectionMixin, QDialog):
         plot_layout = QVBoxLayout(plot_panel)
         plot_layout.setContentsMargins(0, 0, 0, 0)
 
+        focus_row = QHBoxLayout()
+        focus_label = QLabel("Focus cluster:")
+        focus_label.setStyleSheet("font-weight: 600; color: #333;")
+        self.region_focus_combo = QComboBox()
+        self.region_focus_combo.setMinimumWidth(190)
+        self.region_focus_combo.addItem("All regions", None)
+        for rid in sorted(set(int(v) for v in self.region_ids)):
+            label = (
+                self.region_labels[rid]
+                if 0 <= rid < len(self.region_labels)
+                else f"Region {rid + 1}"
+            )
+            count = int(np.sum(self.region_ids == rid))
+            self.region_focus_combo.addItem(f"{label} ({count} points)", rid)
+        self.region_focus_combo.setToolTip(
+            "Choose a region to outline all of its points; other regions remain visible."
+        )
+        self.region_focus_combo.currentIndexChanged.connect(self._on_region_focus_changed)
+        focus_row.addStretch()
+        focus_row.addWidget(focus_label)
+        focus_row.addWidget(self.region_focus_combo)
+        focus_row.addStretch()
+        plot_layout.addLayout(focus_row)
+
         pg.setConfigOptions(antialias=False)
-        self.pg_plot = pg.PlotWidget(background='w')
+        axis_items = {
+            'bottom': OriginalValueAxis(
+                'bottom', scale=self.axis_scales[0], offset=self.axis_offsets[0]
+            ),
+            'left': OriginalValueAxis(
+                'left', scale=self.axis_scales[1], offset=self.axis_offsets[1]
+            ),
+        }
+        self.pg_plot = pg.PlotWidget(background='w', axisItems=axis_items)
         self.pg_plot.setMouseTracking(True)
         self.pg_plot.viewport().setMouseTracking(True)
         self.pg_plot.viewport().installEventFilter(self)
@@ -130,6 +198,8 @@ class HoverScatterDialog(HoverAIMixin, HoverPlotSelectionMixin, QDialog):
             app.installEventFilter(self)
             self._app_event_filter_installed = True
         self.pg_plot.showGrid(x=True, y=True, alpha=0.22)
+        self.pg_plot.showAxis('bottom', True)
+        self.pg_plot.showAxis('left', True)
         self.pg_plot.setLabel('bottom', self.x_label)
         self.pg_plot.setLabel('left', self.y_label)
         self.pg_plot.setTitle("Final Analysis - Hover, Select, Ask AI")

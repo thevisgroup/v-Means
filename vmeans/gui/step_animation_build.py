@@ -210,6 +210,10 @@ class StepAnimationBuildMixin:
                 "center_method": self.anim_center_combo.currentText(),
                 "recursion_enabled": self.anim_recursion_cb.isChecked(),
                 "max_recursion_depth": self.anim_recursion_depth_spin.value(),
+                "standardized": (
+                    self.data_source_combo.currentIndex() != 0
+                    and self.anim_standardize_cb.isChecked()
+                ),
             }
 
             # Reset global state

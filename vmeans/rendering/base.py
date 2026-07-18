@@ -546,6 +546,10 @@ def _draw_child_visible_silhouette(ax, child_center, theta_edges_local, segment_
     points_global = np.column_stack([all_x, all_y]) + child_center
     r_global, theta_global = convert_to_polar(points_global, parent_centroid)
 
+    # Preserve continuity when the outline crosses the polar 0/2π seam.
+    # Without this, wrapped angles create long radial chords across the plot.
+    theta_global = np.unwrap(theta_global)
+
     ax.plot(theta_global, r_global, color=color, linewidth=linewidth, linestyle='-',
             label=label, alpha=alpha, zorder=zorder)
 
@@ -610,6 +614,10 @@ def _draw_child_visible_silhouette_connected(ax, child_center, theta_edges_local
     # Convert closed path to parent polar coordinates
     points_global = np.column_stack([all_x, all_y]) + child_center
     r_global, theta_global = convert_to_polar(points_global, parent_centroid)
+
+    # Preserve the connected outline across the polar 0/2π seam.  Wrapped
+    # angles otherwise produce long radial chords across the final frame.
+    theta_global = np.unwrap(theta_global)
 
     ax.plot(theta_global, r_global, color=color, linewidth=linewidth, linestyle='-',
             label=label, alpha=alpha, zorder=zorder)

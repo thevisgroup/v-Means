@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget, QGroupBox, QComboBox, QPushButton, QTextEdit,
     QPlainTextEdit, QCheckBox, QToolTip, QRubberBand
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QRect, QSize
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QRect, QSize, QPointF
 
 import pyqtgraph as pg
 
@@ -18,12 +18,77 @@ from scipy.spatial import cKDTree
 from vmeans.ai_client import MODEL_PRESETS, ask_ai
 from vmeans.colors import get_colors_for_centers
 
+
+class RegionLegendSample(pg.graphicsItems.LegendItem.ItemSample):
+    """Legend marker that emits clicks without hiding its scatter item."""
+
+    def mouseClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            event.accept()
+            self.sigClicked.emit(self.item)
+
+
+class RegionLegendLabel(pg.LabelItem):
+    sigClicked = pyqtSignal(object)
+
+    def __init__(self, item, text, **kwargs):
+        super().__init__(text, **kwargs)
+        self.plot_item = item
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+
+    def mouseClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            event.accept()
+            self.sigClicked.emit(self.plot_item)
+
+
+class RegionLegend(pg.LegendItem):
+    """Legend whose markers and labels both act as region-focus buttons."""
+
+    def __init__(self, **kwargs):
+        super().__init__(sampleType=RegionLegendSample, **kwargs)
+
+    def addItem(self, item, name):
+        label = RegionLegendLabel(
+            item,
+            name,
+            color=self.opts['labelTextColor'],
+            justify='left',
+            size=self.opts['labelTextSize'],
+        )
+        sample = RegionLegendSample(item)
+        sample.sigClicked.connect(self.sigSampleClicked)
+        label.sigClicked.connect(self.sigSampleClicked)
+        self.items.append((sample, label))
+        self._addItemToLayout(sample, label)
+        self.updateSize()
+
+
 class HoverPlotSelectionMixin:
     def _draw_scatter(self):
         """Draw a clean Cartesian scatter colored by region using Qt-native graphics."""
         self.pg_plot.clear()
         self.pg_scatter_items = []
-        legend = self.pg_plot.addLegend(offset=(-12, 12))
+        self.pg_plot.plotItem.legend = None
+        legend = RegionLegend(offset=(-12, 12), labelTextSize='9pt')
+        legend.setParentItem(self.pg_view)
+        self.pg_plot.plotItem.legend = legend
+        legend.sigSampleClicked.connect(self._on_region_legend_clicked)
+        self.region_item_ids = {}
+        self.region_legend_labels = {}
+
+        # A scene item has no OS tooltip timeout: it remains visible for as
+        # long as the pointer stays on the same point.
+        self.hover_card = pg.TextItem(
+            color='#202124',
+            anchor=(0, 1),
+            border=pg.mkPen('#30343b', width=1.2),
+            fill=pg.mkBrush(255, 255, 255, 238),
+            ensureInBounds=True,
+        )
+        self.hover_card.setZValue(1000)
+        self.hover_card.hide()
+        self.pg_plot.addItem(self.hover_card, ignoreBounds=True)
 
         unique_region_ids = sorted(set(int(v) for v in self.region_ids))
         for rid in unique_region_ids:
@@ -43,11 +108,22 @@ class HoverPlotSelectionMixin:
                 pen=pg.mkPen((255, 255, 255, 150), width=0.45),
                 hoverable=True,
                 hoverPen=pg.mkPen('#222222', width=1.2),
+                tip=None,
                 name=label,
             )
             item.sigClicked.connect(self._on_pg_points_clicked)
             self.pg_plot.addItem(item)
             self.pg_scatter_items.append(item)
+            self.region_item_ids[id(item)] = rid
+            self.region_legend_labels[rid] = legend.items[-1][1]
+
+        self.region_focus_sc = pg.ScatterPlotItem(
+            size=13,
+            pxMode=True,
+            brush=pg.mkBrush(0, 0, 0, 0),
+            pen=pg.mkPen('#111111', width=2.0),
+        )
+        self.pg_plot.addItem(self.region_focus_sc)
 
         self.selection_sc = pg.ScatterPlotItem(
             size=14,
@@ -56,7 +132,70 @@ class HoverPlotSelectionMixin:
             pen=pg.mkPen('#ff8c00', width=2.2),
         )
         self.pg_plot.addItem(self.selection_sc)
+        self._update_region_focus()
         self._set_equal_plot_range()
+
+    def _on_region_legend_clicked(self, item):
+        """Toggle an outline around every point in the clicked region."""
+        item.setVisible(True)
+        rid = self.region_item_ids.get(id(item))
+        if rid is None:
+            return
+        self.focused_region_id = None if self.focused_region_id == rid else rid
+        self._sync_region_focus_combo()
+        self._update_region_focus()
+
+    def _on_region_focus_changed(self, combo_index: int):
+        """Focus a region selected from the explicit cluster control."""
+        self.focused_region_id = self.region_focus_combo.itemData(combo_index)
+        self._update_region_focus()
+
+    def _sync_region_focus_combo(self):
+        combo = getattr(self, 'region_focus_combo', None)
+        if combo is None:
+            return
+        target = 0
+        for index in range(combo.count()):
+            if combo.itemData(index) == self.focused_region_id:
+                target = index
+                break
+        combo.blockSignals(True)
+        combo.setCurrentIndex(target)
+        combo.blockSignals(False)
+
+    def _update_region_focus(self):
+        rid = self.focused_region_id
+        if rid is None:
+            indices = np.array([], dtype=int)
+        else:
+            indices = np.where(self.region_ids == rid)[0]
+
+        if hasattr(self, 'region_focus_sc'):
+            self.region_focus_sc.setData(
+                x=self.plot_x[indices] if len(indices) else [],
+                y=self.plot_y[indices] if len(indices) else [],
+            )
+
+        for region_id, label_item in getattr(self, 'region_legend_labels', {}).items():
+            label = (
+                self.region_labels[region_id]
+                if 0 <= region_id < len(self.region_labels)
+                else f"Region {region_id + 1}"
+            )
+            label_item.setText(f"▶ {label}" if region_id == rid else label)
+
+        if hasattr(self, 'info_label'):
+            if rid is None:
+                self.info_label.setText(
+                    f"Points: {len(self.points)}  |  Regions: {self.data['n_regions']}  |  "
+                    "Click a legend region to outline all its points"
+                )
+            else:
+                label = self._region_name(int(indices[0])) if len(indices) else f"Region {rid + 1}"
+                self.info_label.setText(
+                    f"Focused: {label}  |  {len(indices)} points  |  "
+                    "Other regions remain visible; click again to clear"
+                )
 
 
     def _set_equal_plot_range(self):
@@ -88,6 +227,142 @@ class HoverPlotSelectionMixin:
         if 0 <= rid < len(self.region_labels):
             return self.region_labels[rid]
         return "Unassigned"
+
+    def _cluster_sample_indices(self, idx: int, max_samples: int = 4) -> List[int]:
+        """Return the hovered row plus stable examples from the same region."""
+        rid = int(self.region_ids[idx])
+        peers = np.where(self.region_ids == rid)[0]
+        others = peers[peers != idx]
+        if len(others) > max_samples - 1:
+            positions = np.linspace(0, len(others) - 1, max_samples - 1, dtype=int)
+            others = others[positions]
+        return [idx, *[int(i) for i in others[:max_samples - 1]]]
+
+    def _point_tooltip_text(self, idx: int) -> str:
+        """Build one consistent tooltip with multiple same-cluster samples."""
+        region_name = self._region_name(idx)
+        region_size = int(np.sum(self.region_ids == self.region_ids[idx]))
+        lines = [f"Index: {idx}", f"Region: {region_name} ({region_size} samples)"]
+        sample_indices = self._cluster_sample_indices(idx)
+
+        if self.has_original_coords:
+            x_col, y_col = self.original_xy_cols
+            row = self.original_df.iloc[idx]
+            lines.extend([
+                f"{x_col}: {self._format_value(row[x_col])}",
+                f"{y_col}: {self._format_value(row[y_col])}",
+                "Other samples from this cluster:",
+            ])
+            for sample_idx in sample_indices[1:]:
+                sample = self.original_df.iloc[sample_idx]
+                lines.append(
+                    f"  #{sample_idx}: {x_col}={self._format_value(sample[x_col])}; "
+                    f"{y_col}={self._format_value(sample[y_col])}"
+                )
+        else:
+            lines.extend([
+                f"{self.x_label}: {self.plot_x[idx]:.2f}",
+                f"{self.y_label}: {self.plot_y[idx]:.2f}",
+                "Other samples from this cluster:",
+            ])
+            for sample_idx in sample_indices[1:]:
+                lines.append(
+                    f"  #{sample_idx}: x={self.plot_x[sample_idx]:.2f}; "
+                    f"y={self.plot_y[sample_idx]:.2f}"
+                )
+        if len(sample_indices) == 1:
+            lines.append("  No additional samples in this cluster")
+        if idx in self.selected_indices:
+            lines.append("Selected: yes")
+        return "\n".join(lines)
+
+    def _show_hover_card(self, idx: int) -> None:
+        """Show the card in the least obstructive of four nearby quadrants."""
+        x = float(self.plot_x[idx])
+        y = float(self.plot_y[idx])
+        self.hover_card.setText(self._point_tooltip_text(idx))
+
+        point_scene = self.pg_view.mapViewToScene(QPointF(x, y))
+        plot_rect = self.pg_view.sceneBoundingRect().adjusted(8, 8, -8, -8)
+        card_rect = self.hover_card.boundingRect()
+        width = max(float(card_rect.width()), 1.0)
+        height = max(float(card_rect.height()), 1.0)
+        gap = 14.0
+
+        # Ordered to prefer the right-hand side when obstruction scores tie.
+        candidates = [
+            ((0, 1), gap, -gap),
+            ((0, 0), gap, gap),
+            ((1, 1), -gap, -gap),
+            ((1, 0), -gap, gap),
+        ]
+        # Search the whole plot as well, so distant empty space is preferred to
+        # covering a dense cluster beside the hovered point.
+        grid_left = float(plot_rect.left())
+        grid_top = float(plot_rect.top())
+        max_left = max(float(plot_rect.right()) - width, grid_left)
+        max_top = max(float(plot_rect.bottom()) - height, grid_top)
+        for left in np.linspace(grid_left, max_left, 9):
+            for top in np.linspace(grid_top, max_top, 7):
+                candidates.append(((0, 0), float(left) - float(point_scene.x()),
+                                   float(top) - float(point_scene.y())))
+        scene_points = [
+            self.pg_view.mapViewToScene(QPointF(float(px), float(py)))
+            for px, py in self._plot_points
+        ]
+        legend = getattr(self.pg_plot.plotItem, 'legend', None)
+        legend_rect = legend.sceneBoundingRect() if legend is not None else None
+
+        best = None
+        for preference, (anchor, dx, dy) in enumerate(candidates):
+            pos_x = float(point_scene.x()) + dx
+            pos_y = float(point_scene.y()) + dy
+            left = pos_x - anchor[0] * width
+            top = pos_y - anchor[1] * height
+            right = left + width
+            bottom = top + height
+
+            covered = sum(
+                left - 4 <= float(point.x()) <= right + 4
+                and top - 4 <= float(point.y()) <= bottom + 4
+                for point in scene_points
+            )
+            overflow = (
+                max(float(plot_rect.left()) - left, 0.0)
+                + max(right - float(plot_rect.right()), 0.0)
+                + max(float(plot_rect.top()) - top, 0.0)
+                + max(bottom - float(plot_rect.bottom()), 0.0)
+            )
+            legend_overlap = 0
+            if legend_rect is not None:
+                legend_overlap = not (
+                    right < float(legend_rect.left())
+                    or left > float(legend_rect.right())
+                    or bottom < float(legend_rect.top())
+                    or top > float(legend_rect.bottom())
+                )
+
+            nearest_x = min(max(float(point_scene.x()), left), right)
+            nearest_y = min(max(float(point_scene.y()), top), bottom)
+            distance = (
+                (nearest_x - float(point_scene.x())) ** 2
+                + (nearest_y - float(point_scene.y())) ** 2
+            )
+
+            score = (overflow > 0, overflow, covered, legend_overlap, distance, preference)
+            if best is None or score < best[0]:
+                best = (score, anchor, pos_x, pos_y)
+
+        _, anchor, pos_x, pos_y = best
+        card_position = self.pg_view.mapSceneToView(QPointF(pos_x, pos_y))
+        self.hover_card.setAnchor(anchor)
+        self.hover_card.setPos(card_position)
+        self.hover_card.show()
+
+    def _hide_hover_card(self) -> None:
+        card = getattr(self, 'hover_card', None)
+        if card is not None:
+            card.hide()
 
 
     def _event_additive(self, event=None) -> bool:
@@ -122,7 +397,7 @@ class HoverPlotSelectionMixin:
             if etype == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 return self._on_pg_mouse_release(event)
             if etype == QEvent.Type.Leave:
-                QToolTip.hideText()
+                self._hide_hover_card()
                 self._last_hover_idx = None
         elif plot is not None and self._mouse_press is not None:
             etype = event.type()
@@ -395,7 +670,7 @@ class HoverPlotSelectionMixin:
         mapped = self._event_to_plot_pos(event)
         if mapped is None:
             if self._last_hover_idx is not None:
-                QToolTip.hideText()
+                self._hide_hover_card()
                 self._last_hover_idx = None
             return
 
@@ -405,34 +680,8 @@ class HoverPlotSelectionMixin:
             if idx == self._last_hover_idx:
                 return
             self._last_hover_idx = idx
-            px, py = self.plot_x[idx], self.plot_y[idx]
-            region_name = self._region_name(idx)
-
-            if self.original_df is not None and idx < len(self.original_df) and self.original_xy_cols is not None:
-                row = self.original_df.iloc[idx]
-                x_col, y_col = self.original_xy_cols
-                x_val = self._format_value(row[x_col])
-                y_val = self._format_value(row[y_col])
-
-                text = (
-                    f"Index: {idx}\n"
-                    f"Region: {region_name}\n"
-                    f"{x_col}: {x_val}\n"
-                    f"{y_col}: {y_val}"
-                )
-            else:
-                text = (
-                    f"Index: {idx}\n"
-                    f"Region: {region_name}\n"
-                    f"{self.x_label}: {px:.2f}\n"
-                    f"{self.y_label}: {py:.2f}"
-                )
-
-            if idx in self.selected_indices:
-                text += "\nSelected: yes"
-
-            QToolTip.showText(self.pg_plot.viewport().mapToGlobal(local_pos), text, self.pg_plot.viewport())
+            self._show_hover_card(idx)
         else:
             if self._last_hover_idx is not None:
-                QToolTip.hideText()
+                self._hide_hover_card()
                 self._last_hover_idx = None
