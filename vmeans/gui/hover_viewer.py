@@ -7,7 +7,7 @@ from typing import Dict, Any, Iterable, List
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QWidget, QGroupBox, QComboBox, QPushButton, QTextEdit,
-    QPlainTextEdit, QCheckBox, QToolTip, QRubberBand
+    QPlainTextEdit, QCheckBox, QToolTip, QRubberBand, QTabWidget
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QRect, QSize
 
@@ -20,6 +20,7 @@ from vmeans.colors import get_colors_for_centers
 
 from .hover_data import RECURSIVE_HOVER_FRAMES, _extract_region_data
 from .hover_ai import HoverAIMixin, AIChatWorker
+from .hover_cluster_table import HoverClusterTableMixin
 from .hover_plot import HoverPlotSelectionMixin
 
 
@@ -38,7 +39,9 @@ class OriginalValueAxis(pg.AxisItem):
         return [f"{value:.{decimals}f}" for value in original_values]
 
 
-class HoverScatterDialog(HoverAIMixin, HoverPlotSelectionMixin, QDialog):
+class HoverScatterDialog(
+    HoverAIMixin, HoverPlotSelectionMixin, HoverClusterTableMixin, QDialog
+):
     """Non-modal dialog with hover, point selection, and AI feedback."""
 
     MAX_SELECTED_ROWS = 120
@@ -55,7 +58,7 @@ class HoverScatterDialog(HoverAIMixin, HoverPlotSelectionMixin, QDialog):
         super().__init__(parent)
         self.setWindowTitle("🔍 Hover Scatter Viewer")
         self.setMinimumSize(1220, 780)
-        self.resize(1320, 820)
+        self.resize(1560, 900)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._app_event_filter_installed = False
 
@@ -73,6 +76,7 @@ class HoverScatterDialog(HoverAIMixin, HoverPlotSelectionMixin, QDialog):
         self._rubber_origin = None
         self._last_drag_local_pos = None
         self._selection_before_drag = set()
+        self._init_hover_detail_state()
 
         self.data = _extract_region_data(frame_name, payload)
         self.points = self.data['points']
@@ -174,7 +178,22 @@ class HoverScatterDialog(HoverAIMixin, HoverPlotSelectionMixin, QDialog):
             "Choose a region to outline all of its points; other regions remain visible."
         )
         self.region_focus_combo.currentIndexChanged.connect(self._on_region_focus_changed)
+        hover_mode_label = QLabel("Hover detail:")
+        hover_mode_label.setStyleSheet("font-weight: 600; color: #333;")
+        self.hover_mode_combo = QComboBox()
+        self.hover_mode_combo.addItem("Compact card", self.HOVER_MODE_CARD)
+        self.hover_mode_combo.addItem("Cluster table", self.HOVER_MODE_TABLE)
+        self.hover_mode_combo.setToolTip(
+            "Compact card shows the existing plot tooltip. Cluster table compares every member "
+            "and stays visible after a point is selected."
+        )
+        self.hover_mode_combo.currentIndexChanged.connect(
+            self._on_hover_detail_mode_changed
+        )
         focus_row.addStretch()
+        focus_row.addWidget(hover_mode_label)
+        focus_row.addWidget(self.hover_mode_combo)
+        focus_row.addSpacing(18)
         focus_row.addWidget(focus_label)
         focus_row.addWidget(self.region_focus_combo)
         focus_row.addStretch()
@@ -220,8 +239,41 @@ class HoverScatterDialog(HoverAIMixin, HoverPlotSelectionMixin, QDialog):
         plot_layout.addWidget(hint)
         content.addWidget(plot_panel, 3)
 
+        self.cluster_table_panel = self._build_cluster_table_panel()
         self.ai_panel = self._build_ai_panel()
-        content.addWidget(self.ai_panel, 1)
+        self.detail_tabs = QTabWidget()
+        self.detail_tabs.setMinimumWidth(430)
+        self.detail_tabs.setStyleSheet(
+            """
+            QTabWidget::pane {
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                background-color: white;
+            }
+            QTabBar::tab {
+                background-color: #e0e0e0;
+                color: #555555;
+                border: 1px solid #cccccc;
+                border-bottom: none;
+                padding: 8px 16px;
+                margin-right: 2px;
+                font-weight: bold;
+            }
+            QTabBar::tab:selected {
+                background-color: #4CAF50;
+                color: white;
+                border-color: #4CAF50;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #d0d0d0;
+                color: #333333;
+            }
+            """
+        )
+        self.detail_tabs.addTab(self.cluster_table_panel, "Cluster Table")
+        self.detail_tabs.addTab(self.ai_panel, "AI Feedback")
+        self.detail_tabs.setCurrentWidget(self.ai_panel)
+        content.addWidget(self.detail_tabs, 2)
 
         self._draw_scatter()
         self._update_selection_display()

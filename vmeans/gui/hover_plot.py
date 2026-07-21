@@ -30,11 +30,21 @@ class RegionLegendSample(pg.graphicsItems.LegendItem.ItemSample):
 
 class RegionLegendLabel(pg.LabelItem):
     sigClicked = pyqtSignal(object)
+    sigHovered = pyqtSignal(object, bool)
 
     def __init__(self, item, text, **kwargs):
         super().__init__(text, **kwargs)
         self.plot_item = item
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setAcceptHoverEvents(True)
+
+    def hoverEnterEvent(self, event):
+        event.accept()
+        self.sigHovered.emit(self.plot_item, True)
+
+    def hoverLeaveEvent(self, event):
+        event.accept()
+        self.sigHovered.emit(self.plot_item, False)
 
     def mouseClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -44,6 +54,8 @@ class RegionLegendLabel(pg.LabelItem):
 
 class RegionLegend(pg.LegendItem):
     """Legend whose markers and labels both act as region-focus buttons."""
+
+    sigRegionHovered = pyqtSignal(object, bool)
 
     def __init__(self, **kwargs):
         super().__init__(sampleType=RegionLegendSample, **kwargs)
@@ -59,6 +71,7 @@ class RegionLegend(pg.LegendItem):
         sample = RegionLegendSample(item)
         sample.sigClicked.connect(self.sigSampleClicked)
         label.sigClicked.connect(self.sigSampleClicked)
+        label.sigHovered.connect(self.sigRegionHovered)
         self.items.append((sample, label))
         self._addItemToLayout(sample, label)
         self.updateSize()
@@ -74,6 +87,7 @@ class HoverPlotSelectionMixin:
         legend.setParentItem(self.pg_view)
         self.pg_plot.plotItem.legend = legend
         legend.sigSampleClicked.connect(self._on_region_legend_clicked)
+        legend.sigRegionHovered.connect(self._on_region_legend_hovered)
         self.region_item_ids = {}
         self.region_legend_labels = {}
 
@@ -144,6 +158,23 @@ class HoverPlotSelectionMixin:
         self.focused_region_id = None if self.focused_region_id == rid else rid
         self._sync_region_focus_combo()
         self._update_region_focus()
+
+    def _on_region_legend_hovered(self, item, hovering: bool):
+        """Preview a cluster from its legend label without changing selection."""
+        rid = self.region_item_ids.get(id(item))
+        if rid is None:
+            return
+        if hovering:
+            self._legend_hover_region_id = rid
+            self._last_hover_idx = None
+            preview_idx = self._cluster_preview_index(rid)
+            if preview_idx is not None:
+                self._show_hover_detail(preview_idx)
+            return
+        if self._legend_hover_region_id == rid:
+            self._legend_hover_region_id = None
+            self._last_hover_idx = None
+            self._hide_hover_detail()
 
     def _on_region_focus_changed(self, combo_index: int):
         """Focus a region selected from the explicit cluster control."""
@@ -243,6 +274,9 @@ class HoverPlotSelectionMixin:
         region_name = self._region_name(idx)
         region_size = int(np.sum(self.region_ids == self.region_ids[idx]))
         lines = [f"Index: {idx}", f"Region: {region_name} ({region_size} samples)"]
+        diagnosis = self._diagnosis_label(idx)
+        if diagnosis:
+            lines.append(f"Primary diagnosis: {diagnosis}")
         sample_indices = self._cluster_sample_indices(idx)
 
         if self.has_original_coords:
@@ -255,8 +289,10 @@ class HoverPlotSelectionMixin:
             ])
             for sample_idx in sample_indices[1:]:
                 sample = self.original_df.iloc[sample_idx]
+                sample_diagnosis = self._diagnosis_label(sample_idx)
+                sample_identity = f" {sample_diagnosis};" if sample_diagnosis else ""
                 lines.append(
-                    f"  #{sample_idx}: {x_col}={self._format_value(sample[x_col])}; "
+                    f"  #{sample_idx}:{sample_identity} {x_col}={self._format_value(sample[x_col])}; "
                     f"{y_col}={self._format_value(sample[y_col])}"
                 )
         else:
@@ -397,7 +433,7 @@ class HoverPlotSelectionMixin:
             if etype == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                 return self._on_pg_mouse_release(event)
             if etype == QEvent.Type.Leave:
-                self._hide_hover_card()
+                self._hide_hover_detail()
                 self._last_hover_idx = None
         elif plot is not None and self._mouse_press is not None:
             etype = event.type()
@@ -591,6 +627,7 @@ class HoverPlotSelectionMixin:
             self.selected_indices.update(indices)
         else:
             self.selected_indices = set(indices)
+        self._set_cluster_table_anchor(indices)
         self._update_selection_display()
 
 
@@ -604,6 +641,7 @@ class HoverPlotSelectionMixin:
 
     def _clear_selection(self):
         self.selected_indices.clear()
+        self._cluster_table_anchor_idx = None
         self._update_selection_display()
 
 
@@ -617,6 +655,12 @@ class HoverPlotSelectionMixin:
 
 
     def closeEvent(self, event):
+        if self.ai_worker is not None and self.ai_worker.isRunning():
+            self.ai_status_label.setText(
+                "Please wait for the current AI response before closing this window."
+            )
+            event.ignore()
+            return
         if self._app_event_filter_installed:
             app = QApplication.instance()
             if app is not None:
@@ -650,6 +694,8 @@ class HoverPlotSelectionMixin:
                 if len(region_counts) > 4:
                     summary += ", ..."
                 self.selected_count_label.setText(f"Selected points: {total} ({summary})")
+        if self._mouse_press is None:
+            self._sync_cluster_table_to_selection()
 
 
     def _selection_region_counts(self) -> Dict[str, int]:
@@ -661,7 +707,9 @@ class HoverPlotSelectionMixin:
 
 
     def _on_pg_hover(self, event):
-        """Show compact Qt tooltip when hovering over a data point."""
+        """Show the selected hover-detail mode for the nearest data point."""
+        if self._legend_hover_region_id is not None:
+            return
         now = time.monotonic()
         if now - self._last_hover_time < 0.035:
             return
@@ -670,7 +718,7 @@ class HoverPlotSelectionMixin:
         mapped = self._event_to_plot_pos(event)
         if mapped is None:
             if self._last_hover_idx is not None:
-                self._hide_hover_card()
+                self._hide_hover_detail()
                 self._last_hover_idx = None
             return
 
@@ -680,8 +728,8 @@ class HoverPlotSelectionMixin:
             if idx == self._last_hover_idx:
                 return
             self._last_hover_idx = idx
-            self._show_hover_card(idx)
+            self._show_hover_detail(idx)
         else:
             if self._last_hover_idx is not None:
-                self._hide_hover_card()
+                self._hide_hover_detail()
                 self._last_hover_idx = None

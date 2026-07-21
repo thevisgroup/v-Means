@@ -185,6 +185,25 @@ class StepAnimationRenderMixin:
             payload = getattr(frame, 'payload', {}) or {}
             return payload.get('all_points') is not None or payload.get('points') is not None
 
+        # Hospital tooltips describe the original 15 V-Means clusters.  Later
+        # recursive frames split a few of those clusters into 23/24 leaf
+        # regions, which changes the meaning of the table and its legend.
+        original_rows = getattr(self, 'original_rows_df', None)
+        normalized_columns = {
+            ' '.join(str(column).replace('\n', ' ').split()).lower()
+            for column in getattr(original_rows, 'columns', [])
+        }
+        hospital_columns = {
+            'primary diagnosis: summary code and description',
+            'finished admission episodes',
+            'mean time waited (days)',
+            'mean age (years)',
+        }
+        if hospital_columns.issubset(normalized_columns):
+            for frame in reversed(candidates):
+                if frame.name == 'find_matching_gradient_pairs' and has_points(frame):
+                    return frame
+
         for frame in reversed(candidates):
             if frame.name in preferred_names and has_points(frame):
                 return frame
