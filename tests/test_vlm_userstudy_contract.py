@@ -68,7 +68,7 @@ class VlmUserStudyContractTests(unittest.TestCase):
         ignore_lines = set(module_ignore.splitlines())
 
         self.assertIn("vlm_userstudy", root_readme)
-        self.assertIn("独立", module_readme)
+        self.assertIn("independent", module_readme.lower())
         self.assertIn("OpenAI-compatible", module_readme)
         self.assertIn("6d62fc2fba430a02e0496fa08f4c2c4fc632bb29", module_readme)
         for ignored in ("outputs/", ".env", "*.json", "videos/*"):

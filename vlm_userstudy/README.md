@@ -1,104 +1,135 @@
-# VLM-as-Participant：用本地开源 VLM 复现 clustering 可视化用户研究
+# VLM-as-Participant: Reproducing the Clustering Visualization User Study with Open-Source VLMs
 
-这是 `V-Means` 仓库中的一个**独立研究模块**：它与 Qt 桌面界面解耦，拥有
-自己的依赖、命令行入口、测试、模型注册表和输出目录，可以单独复制到 GPU
-服务器运行。runner 面向支持原生视频内容的 OpenAI-compatible Chat
-Completions endpoint；当前附带五个正式模型配置，也可以注册更多满足该接口的
-视觉语言模型。运行该模块不需要启动 V-Means GUI。
+This directory is an **independent research module** in the `V-Means` repository. It
+is decoupled from the Qt desktop interface and has its own dependencies, command-line
+entry points, tests, model registry, and output directories. It can be copied to and
+run on a GPU server on its own. The runner targets an OpenAI-compatible Chat
+Completions endpoint that accepts native video content. Five formal model
+configurations are included in the current experiment, and additional vision-language
+models can be registered when they satisfy the same interface. Running this module does
+not require starting the V-Means GUI.
 
-本目录是独立源仓库 `Slian22/vlm_userstudy` 在 commit
-`6d62fc2fba430a02e0496fa08f4c2c4fc632bb29` 的集成快照；两份仓库不会自动
-同步。后续从源仓库更新时，应显式核对源码、测试和启动脚本，并重新运行本目录
-的完整回归测试。
+This directory is an integrated snapshot of the independent `Slian22/vlm_userstudy`
+repository at commit `6d62fc2fba430a02e0496fa08f4c2c4fc632bb29`. The two repositories do
+not synchronize automatically. When importing a later snapshot, explicitly compare the
+source code, tests, and serving scripts, then rerun the complete regression suite in
+this directory.
 
-把 SOTA 开源视觉语言模型当作"参与者"，复现 212 名人类参与者的问卷流程，
-结果写入同一个 Google Spreadsheet 的 `VLM_Responses` tab，用于人机对比
-（open-weight VLM baseline）。Q6 与人类表单一致，全部 13 项照常施测；
-VLM 版本预先规定的调整是：开放题要求提供非空的定性回答。
+The module treats state-of-the-art open-source vision-language models as
+"participants" and reproduces the questionnaire workflow used with 212 human
+participants. Results can be written to the `VLM_Responses` tab of the same Google
+Spreadsheet for human-versus-model comparisons (an open-weight VLM baseline). Q6 is
+identical to the human form and all 13 items are administered. The only VLM-specific
+pre-registration adjustment is that open-ended questions must receive a non-empty
+qualitative answer.
 
-## 协议（与人类研究对齐）
+## Human-study-aligned protocol
 
-每个模型 × 每个 run 为**一个会话**：依次原生输入四个视频（processor 内部
-采样，不手动抽帧），每个视频后答 Q1–Q9；四个视频全部留在上下文中之后，
-最后一轮纯文本追问 Q17–Q23（人类表单的 Overall 页同样无视频）。
-（例外：GLM-4.6V——vLLM 的 GLM-4V 实现每个 prompt 最多 1 个视频，
-runner 在每个新视频轮前把先前视频替换为文字占位（`max_videos_per_prompt: 1`），
-模型靠自己此前的作答回忆，等价于人类不能回看视频；CSV 的 input_mode 列
-记为 `native_video_1perprompt`。）
-每模型 3 个独立 run；采样用各厂商模型卡推荐参数（config 的 `sampling`，
-实际 temperature 记录在 CSV 元数据列），每个请求带 `seed=run_id` 保证
-可复现且 run 间独立；统一 num_frames=64/视频（例外：InternVL3.5-38B 用
-24 帧——它无视频 token 压缩，~260 token/帧，4×64 帧约 66k token 超出其
-40960 上下文；24 帧时最重一轮约 36k。CSV 的 num_frames_per_video 列
-如实记录）。不用 temperature=0：
-贪婪解码会让思考型模型陷入无限复读（Qwen3.5-9B 实测）。
+Each model × run is **one conversation**. The runner presents four videos in sequence
+as native video content (the processor performs frame sampling; frames are not extracted
+manually), asks Q1–Q9 after each video, and then asks the text-only Q17–Q23 after all
+four videos remain in the conversation. The human form's Overall page is also
+video-free.
 
-问卷题干与选项**逐字**取自原始 Google Form（有测试比对响应 CSV 表头），
-Q6 全部 13 项与 Google Form 逐字逐序对齐，顺序不变；
-Q17–Q19 锚点 1=Strongly disagree/5=Strongly agree，Q20 为
-1=Not confident at all/5=Very confident。受限解码（guided decoding）把
-每题答案钉死在表单选项集内——这是 radio button 的数字等价物，不含任何
-内容提示；实际生效的约束语法记录在 `answer_constraint` 元数据列
-（json_schema / structured_outputs / none，逐会话自动协商）。开放题
-（Q8/Q9/Q21–Q23）要求 1–3 句非空回答；若没有不清楚或无需改进，模型也必须
-明确说明并简短解释原因。
+There is one model-specific exception: the GLM-4.6V vLLM implementation accepts at most
+one video per prompt. Before each new video round, the runner replaces earlier video
+parts with text placeholders (`max_videos_per_prompt: 1`). The model must rely on its
+own previous answers, matching the human condition in which a participant cannot replay
+the videos. The CSV `input_mode` column records this as
+`native_video_1perprompt`.
 
-## 模型支持与扩展（当前实验定稿五个）
+Every model has three independent runs. Sampling uses the parameters recommended by
+each model's model card (`sampling` in `config.py`), and the actual temperature is
+recorded in the CSV metadata. Every request includes `seed=run_id` for reproducibility
+and independence between runs. The default is 64 frames per video; InternVL3.5-38B
+uses 24 frames because it has no video-token compression (about 260 tokens per frame),
+so four videos × 64 frames would be roughly 66k tokens and exceed its 40960-token
+context. With 24 frames, the heaviest round is about 36k tokens. The
+`num_frames_per_video` CSV column records the value actually used.
 
-| tag | 权重 | 卡（node03） | 磁盘 | 轴 |
+Do not use `temperature=0`: greedy decoding can make thinking models repeat forever
+(observed with Qwen3.5-9B).
+
+Question wording and answer choices are copied **verbatim** from the original Google
+Form (the response CSV header is checked by tests). All 13 Q6 items match the form in
+both wording and order. Q17–Q19 use the anchors 1 = Strongly disagree and 5 = Strongly
+agree; Q20 uses 1 = Not confident at all and 5 = Very confident. Guided decoding pins
+each answer to the form's allowed option set—the numeric equivalent of a radio button,
+without adding content hints. The constraint actually negotiated for each session is
+recorded in the `answer_constraint` metadata column (`json_schema`,
+`structured_outputs`, or `none`). Open-ended questions (Q8/Q9/Q21–Q23) require a
+non-empty answer of one to three sentences. If the model sees nothing unclear or has no
+improvement suggestion, it must say so explicitly and briefly explain why.
+
+## Supported models and extension points (five-model study set)
+
+| Tag | Weights | GPU allocation (node03) | Approx. disk | Role / rationale |
 |---|---|---|---|---|
-| qwen3vl-8b | Qwen/Qwen3-VL-8B-Instruct | GPU 3 | ~17G | 消费级基准 |
-| qwen3.5-9b | Qwen/Qwen3.5-9B | GPU 3 | ~20G | early-fusion 新一代（与 8B 构成架构对照） |
-| minicpm-v-4.5 | openbmb/MiniCPM-V-4_5 | GPU 3 | ~18G | 独立家族 + 视频 token 压缩 |
-| internvl3.5-38b | OpenGVLab/InternVL3_5-38B | GPU 4,5 | ~76G | 独立家族 + 中档规模 |
-| glm-4.6v | zai-org/GLM-4.6V | GPU 4,5,6,7 | ~212G (bf16) | 旗舰档 106B-MoE + 思考型；A800 无原生 FP8，Marlin 回退与 GLM 维度不兼容，故用 bf16 原始权重 |
+| `qwen3vl-8b` | `Qwen/Qwen3-VL-8B-Instruct` | GPU 3 | ~17G | Consumer-scale baseline |
+| `qwen3.5-9b` | `Qwen/Qwen3.5-9B` | GPU 3 | ~20G | New early-fusion generation; architectural contrast with the 8B model |
+| `minicpm-v-4.5` | `openbmb/MiniCPM-V-4_5` | GPU 3 | ~18G | Independent model family with video-token compression |
+| `internvl3.5-38b` | `OpenGVLab/InternVL3_5-38B` | GPUs 4 and 5 | ~76G | Independent family at a mid-range scale |
+| `glm-4.6v` | `zai-org/GLM-4.6V` | GPUs 4, 5, 6, and 7 | ~212G (BF16) | Flagship 106B-MoE thinking model; the A800 has no native FP8 support, and the Marlin fallback is dimension-incompatible with GLM, so the original BF16 weights are used |
 
-总磁盘 ~260G。GLM-4.6V 和 Qwen3.5-9B 是思考型模型（serve 脚本分别带
-`--reasoning-parser glm45` / `--reasoning-parser qwen3`）。config 的
-`MAX_TOKENS=None`：请求不带 token 上限，思考+答案可用满模型上下文窗口
-（serve 脚本的 `--max-model-len`）。采样必须用 config 里各模型的厂商
-推荐参数——temperature=0 贪婪解码会让思考型模型无限复读直到撑爆窗口
-（`empty content (finish_reason=length)`）。
+The total disk requirement is approximately 260G. GLM-4.6V and Qwen3.5-9B are thinking
+models; their serving scripts use `--reasoning-parser glm45` and
+`--reasoning-parser qwen3`, respectively. `config.py` sets `MAX_TOKENS=None`, so the
+request does not impose a token cap: reasoning plus the answer can use the full model
+context window (`--max-model-len` in the serving script). Use each model's vendor
+sampling recommendations from `config.py`. With `temperature=0`, a thinking model can
+repeat until the context window is exhausted (`empty content (finish_reason=length)`).
 
-`serve/glm45v.sh` 和 `serve/qwen3vl_235b_fp8.sh` 是历史参考脚本，不在
-`config.MODELS` 或本次五模型实验中，不要正式运行。
+`serve/glm45v.sh` and `serve/qwen3vl_235b_fp8.sh` are historical reference scripts. They
+are not registered in `config.MODELS` and are not part of the five-model experiment;
+do not run them as formal study conditions.
 
-这五个模型是当前实验的固定比较组，并不是 runner 的接口上限。要接入其他
-模型，在 `config.py` 的 `MODELS` 中增加 tag、模型 ID、采样参数和启动脚本，
-并让对应服务提供支持原生视频输入的 OpenAI-compatible endpoint；随后先运行
-`--dry-run`、回归测试和独立 pilot。模型特有的帧数或单 prompt 视频数量限制也
-应写进该 registry，而不是散落在 runner 中。服务端 `vllm` 没有放进本模块的
-客户端 `requirements.txt`，应在 GPU 环境中按模型和硬件单独安装。
+The five entries are the fixed comparison group for the current experiment, not a limit
+on the runner's interface. To add a model, add its tag, model ID, sampling parameters,
+and serving script to `config.py`'s `MODELS` registry. The corresponding service must
+provide an OpenAI-compatible endpoint with native video support. Then run a `--dry-run`,
+the regression suite, and an isolated pilot before collecting formal runs. Keep
+model-specific frame limits and per-prompt video limits in the registry rather than
+scattering them through `runner.py`. Server-side `vllm` is intentionally omitted from
+this module's client `requirements.txt`; install it separately on the GPU environment
+for the selected model and hardware.
 
-## 安全与运行边界
+## Security and operational boundary
 
-`serve/*.sh` 用于受信任 GPU 节点上的可复现实验，不是经过加固的公共推理服务。
-不要把 vLLM 的 8000 端口直接暴露到公网或不受信任的共享网络；runner 最适合在
-同一节点通过 `localhost` 访问。跨机器运行时，优先使用 SSH tunnel，并同时配置
-防火墙、访问控制和传输加密。若所用 vLLM 版本支持，应显式绑定 loopback 地址。
+The `serve/*.sh` files are research launchers for reproducible runs on a trusted GPU
+node, not hardened public inference services. Do not expose vLLM port 8000 to the public
+Internet or an untrusted shared network. The runner is intended to access the server on
+the same node through `localhost`. For cross-machine runs, prefer an SSH tunnel and
+configure firewall rules, access control, and transport encryption. When supported by
+the installed vLLM version, explicitly bind the service to a loopback address.
 
-InternVL 与 MiniCPM-V 的脚本需要 `--trust-remote-code`。正式实验前应审查并固定
-不可变的 Hugging Face model/code revision，在无额外凭据的专用低权限环境中运行；
-不要把 Google service-account key、HF token 或 SSH agent 放进模型服务进程。
-当前启动脚本保留源研究环境中已验证的参数，因此操作人员必须在服务器边界完成
-这些隔离和 revision 控制。
+The InternVL and MiniCPM-V scripts require `--trust-remote-code`. Before a formal run,
+review and pin immutable Hugging Face model/code revisions, and run in a dedicated,
+low-privilege environment with no extra credentials. Do not place a Google service-
+account key, an HF token, or an SSH agent in the model-serving process. The serving
+scripts retain parameters validated in the source research environment, so operators
+must enforce isolation and revision controls at the server boundary.
 
-runner 的命令行参数属于受信任操作员输入，不应直接接收 Web 请求、作业名称或
-其他外部字符串；自动化必须把 `--tag` 限定为 `config.MODELS` 中的正式 tag，
-并把 `--base-url` 限定为本机或受控 tunnel。共享节点上建议先执行 `umask 077`，
-限制 transcript 和 CSV 的默认权限。模型生成的开放题文本属于不受信任数据；
-不要直接在会执行公式的电子表格程序中打开 CSV，发布前应按研究数据流程检查。
+Runner command-line arguments are trusted operator input. Do not pass web requests, job
+names, or other external strings directly to the CLI. Automation must whitelist `--tag`
+against the formal tags in `config.MODELS` and restrict `--base-url` to the local host or
+a controlled tunnel. On a shared node, run `umask 077` first to limit default
+transcript and CSV permissions. Model-generated open-ended text is untrusted data; do
+not open the CSV directly in a spreadsheet application that evaluates formulas. Review
+the data through the study's publication workflow before sharing it.
 
-Google service-account JSON 必须保存在本仓库之外，并限制为当前用户可读。
-Sheets 的 Editor 权限作用于整个 workbook，而不只是 `VLM_Responses` tab；对人类
-研究数据敏感时，建议先写入独立 workbook 再受控合并。`--replace` 会清空并重写
-目标 tab，执行前必须人工核对 spreadsheet 与 tab。
+The Google service-account JSON key must be stored outside this repository and readable
+only by the current user. Google Sheets Editor permission applies to the entire workbook,
+not just the `VLM_Responses` tab. If the human-study data is sensitive, write to a
+separate VLM-output workbook first and merge it under controlled access. `--replace`
+clears and rewrites the target tab; manually verify the spreadsheet and tab before using
+that option.
 
-## node03：使用已验证环境
+## Verified node03 environment
 
-服务器现有 `vlmstudy` 环境的 vLLM 0.19.0 已跑通 Qwen3-VL-8B 完整 pilot，
-不要为了其他模型预先重建环境。每个新模型先 pilot；只有真实报出不支持架构时，
-再为该模型单独升级或创建环境。
+The existing `vlmstudy` environment on the server has vLLM 0.19.0 and has completed a
+Qwen3-VL-8B pilot. Do not rebuild the environment preemptively for another model. Run a
+pilot for each new model; upgrade or create a model-specific environment only when the
+server reports that an architecture is unsupported.
 
 ```bash
 cd /path/to/v-Means/vlm_userstudy
@@ -108,7 +139,7 @@ python -c "import vllm, openai; print('vLLM', vllm.__version__)"
 python -m unittest discover -s tests -v
 ```
 
-四个视频放在仓库的 `videos/` 下，文件名必须正好是：
+The four videos must be present under `videos/` with exactly these filenames:
 
 ```text
 videos/v1_blobs.mp4
@@ -117,69 +148,79 @@ videos/v3_aggregation.mp4
 videos/v4_hospital.mp4
 ```
 
-集成仓库不重复跟踪这四个较大的 MP4；首次运行前执行
-`bash download_videos.sh` 下载。`videos/` 中除 `.gitkeep` 外的下载文件和残片
-都会被忽略，不会误提交。
-正式结果写入
-`outputs/vlm_responses.csv`，逐轮审计记录写入 `outputs/raw/`；pilot 只写
-`outputs/pilot/`。`outputs/` 已被 Git 忽略，不会误推到 GitHub。
+The integrated repository does not track these large MP4 files. Before the first run,
+download them with `bash download_videos.sh`. Downloaded files and partial downloads
+under `videos/` are ignored except for `.gitkeep`, so they cannot be committed by
+mistake.
 
-注意：当前 schema 为 Q6 全部 13 项，CSV 是 107 列；旧 12 项 schema 的
-pilot CSV 是 103 列。先把旧 `outputs/pilot/` 改名留档，再跑新 pilot；runner
-会主动拒绝把两种 schema 混写。
+Formal results are written to `outputs/vlm_responses.csv`; per-round audit transcripts
+are written to `outputs/raw/`; pilots write only to `outputs/pilot/`. The entire
+`outputs/` directory is ignored by Git and is not pushed to GitHub.
 
-## 每个模型的执行循环
+The current schema contains all 13 Q6 items and has 107 CSV columns. A pilot produced
+with the old 12-item schema has 103 columns. Rename the old `outputs/pilot/` directory
+for archival before running a new pilot; the runner actively refuses to mix the two
+schemas.
+
+## Execution loop for each model
 
 ```bash
-# 服务窗口（tmux）:
-bash serve/<model>.sh                    # node03 卡位已写在每个脚本中
-# runner 窗口:
-curl -f http://localhost:8000/v1/models  # ready 才继续
-python runner.py --tag <tag> --pilot     # 每个新模型必跑，输出隔离在 outputs/pilot/
+# Serving window (tmux):
+bash serve/<model>.sh                    # The node03 GPU assignment is in each script.
+# Runner window:
+curl -f http://localhost:8000/v1/models  # Continue only after the server is ready.
+python runner.py --tag <tag> --pilot     # Required for each new model; isolated in outputs/pilot/.
 python score.py outputs/pilot/vlm_responses.csv
-# 查看 raw transcript、CSV、格式率和 warnings；不预设通过/失败阈值，
-# 结合模型的实际回答决定是否进入正式 runs：
+# Inspect raw transcripts, the CSV, format rates, and warnings. There is no preset
+# pass/fail threshold; use the model's actual answers to decide whether to run formally:
 REV=$(python3 -c "from huggingface_hub import HfApi; print(HfApi().model_info('<hf_id>').sha)")
-python runner.py --tag <tag> --model-revision $REV      # 正式 3 runs
-# 某 run 失败修复后续跑: --start-run-id <N>
-# 换模型: 杀 vLLM，换 serve 脚本，重复
+python runner.py --tag <tag> --model-revision $REV      # Three formal runs.
+# Resume after repairing a failed run: --start-run-id <N>
+# Change models: stop vLLM, switch serving scripts, and repeat.
 ```
 
-全部跑完：`python score.py` 看总表；结果回传本地后
-`push_to_sheet.py` 写入 Sheet（service-account key 不上服务器）。
+After all runs finish, use `python score.py` to view the summary table. Copy the results
+back to a local machine and run `push_to_sheet.py` to write the Sheet; the service-
+account key must not be placed on the GPU server.
 
-## 评分口径（已裁定）
+## Scoring conventions (pre-registered)
 
-- Q3 按 config 的 `q3_expected`（3 / 8 / 6 / I couldn't tell）；Q4 正确答案 False。
-- Q6 主结果用 **human12**：全部 13 项施测，评分排除 `Finding empty space`（计 12 项），
-  并将 `Early termination` 判 No；与人类比较时也从人类数据中使用同一 12 项子集。
-  **design13** 对全部 13 个施测项作敏感性分析（仅 4 个 distractor 判 No，
-  `Early termination` 和 `Finding empty space` 均判 Yes）。
-- 缺失/非法答案一律 valid-only 分母，格式服从率单独报告
-  （videoFmt / overallFmt 列）。
+- Q3 uses `q3_expected` from `config.py` (`3 / 8 / 6 / I couldn't tell`); the correct
+  answer for Q4 is `False`.
+- The primary Q6 result is **human12**: administer all 13 items, but exclude `Finding
+  empty space` from the scored 12-item subset and mark `Early termination` as No. Use
+  the same 12-item subset when comparing with human data. **design13** is a sensitivity
+  analysis over all 13 administered items; only the four distractors are marked No,
+  while both `Early termination` and `Finding empty space` are marked Yes.
+- Missing or invalid answers use valid-only denominators. Report format adherence
+  separately in the `videoFmt` and `overallFmt` columns.
 
-## 可靠性行为
+## Reliability behavior
 
-- 每轮请求：瞬时错误（连接/超时/5xx/429）最多尝试 3 次（等待 30/60s），
-  确定性 4xx 立即失败且不空等；受限解码语法被服务器拒绝时自动降级并记录。
-- transcript 每轮落盘；会话失败不写 CSV 行；dry-run / pilot 与正式数据完全隔离。
-- CSV schema 守卫拒绝新旧表头混写；Sheet 推送默认按
-  (model_tag, run_id, timestamp) 去重追加，允许手工尾列，`--replace` 才整表重写。
-- 元数据列含 served_model、model_revision、vllm_version、gpu_name、
-  serve_script、answer_constraint，保证可复现。
+- Each request retries transient connection, timeout, 5xx, or 429 errors up to three
+  times with 30/60-second waits. Deterministic 4xx errors fail immediately without an
+  artificial wait. If the server rejects the guided-decoding grammar, the runner
+  automatically falls back and records the downgrade.
+- Each round is persisted to a transcript. A failed session produces no CSV row. Dry
+  runs, pilots, and formal data use separate output locations.
+- The CSV schema guard refuses to mix old and new headers. Sheet publishing appends by
+  default with `(model_tag, run_id, timestamp)` de-duplication and permits manually
+  added trailing columns; only `--replace` rewrites the entire tab.
+- Reproducibility metadata includes `served_model`, `model_revision`, `vllm_version`,
+  `gpu_name`, `serve_script`, and `answer_constraint`.
 
-## 目录
+## Directory layout
 
 ```
-README.md         独立模块说明、实验协议和运行手册
-requirements.txt 本地 runner / Sheet / 下载工具依赖（不含服务端 vLLM）
-config.py          视频、q3_expected、运行参数、模型注册表
-questionnaire.py   问卷原文 + 选项 + prompt + JSON schema + 校验
-runner.py          多轮会话 runner（--pilot / --dry-run / --start-run-id / --model-revision）
-score.py           双口径评分 + 格式率
-push_to_sheet.py   写 VLM_Responses tab（本地跑）
-serve/*.sh         五个正式模型 + 两个明确标为 legacy 的 vLLM 启动脚本
-tests/             回归测试（python -m unittest discover -s tests -v）
-download_videos.sh yt-dlp 下载四个视频到 videos/（文件名与 config 一致）
-videos/.gitkeep    保留素材目录；MP4 由 download_videos.sh 单独获取
+README.md         Independent-module overview, study protocol, and runbook
+requirements.txt  Client / Sheet / download-tool dependencies (no server-side vLLM)
+config.py         Video paths, q3_expected, run parameters, and model registry
+questionnaire.py  Verbatim questionnaire, choices, prompts, JSON schemas, and validators
+runner.py         Multi-round runner (--pilot / --dry-run / --start-run-id / --model-revision)
+score.py          Dual-convention scoring and format rates
+push_to_sheet.py  Write the VLM_Responses tab (run locally)
+serve/*.sh        Five formal-model launchers plus two explicitly marked legacy scripts
+tests/            Regression tests (python -m unittest discover -s tests -v)
+download_videos.sh  Download the four configured videos with yt-dlp
+videos/.gitkeep   Keep the media directory; MP4s are acquired separately by download_videos.sh
 ```

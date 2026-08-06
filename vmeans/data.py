@@ -117,7 +117,7 @@ def generate_structured_points(structure='spiral', n_points=500, seed=42):
             urllib.request.urlretrieve(url, txt_path)
             raw = np.loadtxt(txt_path)
             X = raw[:, :2]
-            np.savez(npz_path, data=X)  # 缓存为 npz，下次加载更快
+            np.savez(npz_path, data=X)  # Cache as NPZ for faster subsequent loads.
             print(f"Saved to {npz_path}")
     else:
         raise ValueError(f"Unsupported structure type: {structure}")

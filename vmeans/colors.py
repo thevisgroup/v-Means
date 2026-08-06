@@ -452,7 +452,7 @@ if __name__ == "__main__":
     print()
 
     # Test 1: Basic usage
-    print("【Test 1】Basic usage - 5 clusters")
+    print("[Test 1] Basic usage - 5 clusters")
     print("-" * 50)
     colors = get_cluster_colors(5)
     for i, c in enumerate(colors):
@@ -460,7 +460,7 @@ if __name__ == "__main__":
         print(f"  Cluster {i+1}: {c} (Hue={hue:.0f}°)")
 
     # Test 2: Specify angles
-    print("\n【Test 2】Specify angles - angles map directly")
+    print("\n[Test 2] Specify angles - angles map directly")
     print("-" * 50)
     angles = [30, 35, 40]  # very close angles
     colors = get_cluster_colors(3, angles=angles)
@@ -469,7 +469,7 @@ if __name__ == "__main__":
     print("  ↑ Close angles, close colors (this is correct!)")
 
     # Test 3: Point count affects saturation
-    print("\n【Test 3】Point count affects saturation/value")
+    print("\n[Test 3] Point count affects saturation/value")
     print("-" * 50)
     angles = [30, 35, 40]
     point_counts = [200, 50, 100]  # different point counts
@@ -479,7 +479,7 @@ if __name__ == "__main__":
     print("  ↑ Similar angles, but different point counts, so different color intensity!")
 
     # Test 4: Get from coordinates
-    print("\n【Test 4】Get colors from center coordinates")
+    print("\n[Test 4] Get colors from center coordinates")
     print("-" * 50)
     centers = np.array([
         [1.0, 0.0],    # 0°
@@ -493,7 +493,7 @@ if __name__ == "__main__":
         print(f"  Cluster {i+1}: angle={a:3d}°, points={n:3d} → {c}")
 
     # Test 5: Complete color scheme
-    print("\n【Test 5】Complete color scheme")
+    print("\n[Test 5] Complete color scheme")
     print("-" * 50)
     palette = generate_palette_from_angle(305, n_points=100, max_points=200)
     print(f"  Hue=305° (purple), points=100/200:")
