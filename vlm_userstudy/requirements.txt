@@ -1,0 +1,7 @@
+openai>=1.40
+gspread>=6.0
+huggingface_hub>=0.30
+yt-dlp
+# server side (on the GPU box):
+# The existing node03 vlmstudy environment uses verified vllm==0.19.0.
+# Pilot each model there first; upgrade only a model that actually fails.
